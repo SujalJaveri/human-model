@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pro FBX Hand Controller</title>
+    <title>FinalBaseMesh Controller</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Segoe UI', sans-serif; }
         canvas { display: block; }
@@ -76,8 +76,8 @@
 
     <div id="loader">
         <div class="spinner"></div>
-        <div style="font-weight: bold; letter-spacing: 1px;">LOADING FBX...</div>
-        <div style="font-size:11px; color:#666; margin-top:10px">Looking for 'FinalBaseMesh.fbx'</div>
+        <div style="font-weight: bold; letter-spacing: 1px;">LOADING FILE...</div>
+        <div style="font-size:11px; color:#666; margin-top:10px">Reading 'FinalBaseMesh.fbx'</div>
     </div>
 
     <div id="ui-panel">
@@ -96,9 +96,6 @@
             <div id="status-dot"></div>
             <div id="status-text">Waiting for hand...</div>
         </div>
-        <div style="font-size:10px; color:#666; margin-top:10px; font-style:italic;">
-            (Tip: Edit code variables to invert axes)
-        </div>
     </div>
 
     <video id="input_video" style="display:none"></video>
@@ -111,10 +108,10 @@
         import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 
         // ==========================================
-        //  USER CONFIGURATION (Tweak these!)
+        //  CONFIG
         // ==========================================
-        const INVERT_ROTATION_X = false; // Set true if Left/Right feels wrong
-        const INVERT_ROTATION_Y = false; // Set true if Up/Down feels wrong
+        const INVERT_ROTATION_X = false; 
+        const INVERT_ROTATION_Y = false;
         const ROTATION_SENSITIVITY = 4.0; 
         const ZOOM_SENSITIVITY = 1.5;
         // ==========================================
@@ -151,26 +148,26 @@
         let mixer = null;
         const loader = new FBXLoader();
 
+        // UPDATED FILENAME HERE
         loader.load('./FinalBaseMesh.fbx', (fbx) => {
             model = fbx;
 
-            // 1. Center the model perfectly
+            // 1. Center the model
             const box = new THREE.Box3().setFromObject(model);
             const center = box.getCenter(new THREE.Vector3());
             const size = box.getSize(new THREE.Vector3());
             
-            // Subtract center vector to move model to (0,0,0)
             model.position.sub(center);
 
-            // 2. Normalize Scale (Aim for ~3 units height in camera space)
+            // 2. Normalize Scale 
             const maxDim = Math.max(size.x, size.y, size.z);
-            const scaleFactor = 3.0 / maxDim; // We normalize to small Three.js units
+            const scaleFactor = 3.0 / maxDim;
             
             model.scale.setScalar(scaleFactor);
             model.userData.baseScale = scaleFactor;
 
             // 3. Reset Camera
-            camera.position.set(0, 0, 8); // Close up
+            camera.position.set(0, 0, 8); 
             camera.lookAt(0, 0, 0);
 
             // 4. Shadows
@@ -193,7 +190,7 @@
 
         }, undefined, (e) => {
             console.error(e);
-            document.getElementById('loader').innerHTML = `<div style="color:red; text-align:center">LOAD ERROR<br>Check console.</div>`;
+            document.getElementById('loader').innerHTML = `<div style="color:red; text-align:center">ERROR<br>Check 'FinalBaseMesh.fbx' exists.</div>`;
         });
 
         // --- INTERACTION ---
@@ -246,29 +243,19 @@
                 const thumb = lm[4];
                 const index = lm[8];
 
-                // --- COORDINATE MATH ---
-                
                 // 1. Pinch (Zoom)
                 const dist = Math.hypot(thumb.x - index.x, thumb.y - index.y);
-                const normDist = Math.max(0, Math.min(1, (dist - 0.02) / 0.15)); // Normalize
+                const normDist = Math.max(0, Math.min(1, (dist - 0.02) / 0.15));
                 targetScale = 0.5 + (normDist * ZOOM_SENSITIVITY);
 
                 // 2. Rotation X (Left/Right)
-                // MediaPipe X: 0 (Left) -> 1 (Right). 
-                // We map this to -PI to +PI.
-                // If INVERT is false: Moving hand Right (x=1) -> Rotates negative (Clockwise/Right).
                 let xVal = (wrist.x - 0.5); 
-                if (!INVERT_ROTATION_X) xVal = -xVal; // Mirror fix
+                if (!INVERT_ROTATION_X) xVal = -xVal; 
                 targetRotY = xVal * ROTATION_SENSITIVITY;
 
                 // 3. Rotation Y (Up/Down)
-                // MediaPipe Y: 0 (Top) -> 1 (Bottom).
-                // We map this to -PI/2 to +PI/2.
                 let yVal = (wrist.y - 0.5);
                 if (INVERT_ROTATION_Y) yVal = -yVal;
-                
-                // Clamp Vertical Rotation (Prevent backflip)
-                // Limit to roughly -70 deg to +70 deg
                 targetRotX = Math.max(-1.2, Math.min(1.2, yVal * 2.5));
 
                 // Update Debug UI
