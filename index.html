@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive 3D Human Controller</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Segoe UI', sans-serif; }
+        canvas { display: block; }
+        
+        /* UI Panel Styling - Matches your particle system style */
+        #ui-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(20, 20, 30, 0.8);
+            backdrop-filter: blur(10px);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: white;
+            width: 220px;
+            z-index: 10;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+            transition: opacity 0.3s;
+        }
+
+        h2 { margin: 0 0 15px 0; font-size: 16px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: #aaa; }
+
+        .control-group { margin-bottom: 20px; }
+        
+        label { display: block; margin-bottom: 8px; font-size: 12px; color: #888; }
+        .instruction { font-size: 11px; color: #666; margin-bottom: 4px; }
+
+        /* Color Input */
+        input[type="color"] {
+            width: 100%;
+            height: 35px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            background: transparent;
+        }
+
+        /* Status & Video Preview */
+        #status { font-size: 11px; color: #4f6ef7; margin-top: 10px; font-weight: bold; }
+        
+        #webcam-preview {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 160px;
+            height: 120px;
+            border-radius: 8px;
+            transform: scaleX(-1); /* Mirror effect */
+            opacity: 0.5;
+            border: 1px solid rgba(255,255,255,0.2);
+            z-index: 5;
+        }
+
+        /* Loading Overlay */
+        #loader {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; z-index: 999;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            color: white; font-family: monospace; transition: opacity 0.5s;
+        }
+    </style>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="loader">
+        <div>LOADING HUMAN MODEL...</div>
+        <div style="font-size:11px; color:#666; margin-top:10px">Please ensure 'FinalBaseMesh.glb' is in this folder</div>
+    </div>
+
+    <div id="ui-panel">
+        <h2>Human Control</h2>
+        
+        <div class="control-group">
+            <label>Instructions</label>
+            <div class="instruction">✋ Move Hand: <b>Rotate</b></div>
+            <div class="instruction">👌 Pinch Fingers: <b>Scale/Zoom</b></div>
+        </div>
+
+        <div class="control-group">
+            <label>Model Tint</label>
+            <input type="color" id="colorPicker" value="#ffffff">
+        </div>
+
+        <div id="status">Waiting for camera...</div>
+    </div>
+
+    <video id="input_video" style="display:none"></video>
+    <canvas id="webcam-preview"></canvas>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        // --- CONFIGURATION ---
+        let targetColor = new THREE.Color(0xffffff);
+        
+        // --- THREE.JS SETUP ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x050505);
+        scene.fog = new THREE.FogExp2(0x050505, 0.02); // Fog to match particle vibe
+
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 1.0, 3.5); // Adjusted for human height
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        document.body.appendChild(renderer.domElement);
+
+        // --- LIGHTING (Crucial for GLB models, unlike Particles) ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        dirLight.position.set(5, 10, 7);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        const rimLight = new THREE.SpotLight(0x4f6ef7, 5); // Blue rim light like the particle color
+        rimLight.position.set(-5, 5, -5);
+        scene.add(rimLight);
+
+        // --- MODEL LOADER ---
+        let humanModel = null;
+        let mixer = null; // For animations if present
+
+        const loader = new GLTFLoader();
+        
+        loader.load('./FinalBaseMesh.glb', (gltf) => {
+            humanModel = gltf.scene;
+
+            // Auto-Center logic
+            const box = new THREE.Box3().setFromObject(humanModel);
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+
+            // Reset position to center
+            humanModel.position.x += (humanModel.position.x - center.x);
+            humanModel.position.y += (humanModel.position.y - center.y);
+            humanModel.position.z += (humanModel.position.z - center.z);
+
+            // Auto-Scale logic (Fit to screen)
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const scale = 2.5 / maxDim;
+            humanModel.scale.set(scale, scale, scale);
+            
+            // Enable Shadows
+            humanModel.traverse((node) => {
+                if (node.isMesh) {
+                    node.castShadow = true;
+                    node.receiveShadow = true;
+                    // Apply initial tint material if needed, or keep original
+                    // node.material.color.set(targetColor); 
+                }
+            });
+
+            // Check for animations
+            if (gltf.animations.length > 0) {
+                mixer = new THREE.AnimationMixer(humanModel);
+                mixer.clipAction(gltf.animations[0]).play();
+            }
+
+            scene.add(humanModel);
+
+            // Remove Loader
+            document.getElementById('loader').style.opacity = '0';
+            setTimeout(() => document.getElementById('loader').remove(), 500);
+
+        }, undefined, (error) => {
+            console.error(error);
+            const loaderDiv = document.getElementById('loader');
+            loaderDiv.innerHTML = `<div style="color:red; text-align:center">ERROR LOADING MODEL<br>Check console for details.<br>Use Live Server.</div>`;
+        });
+
+        // --- INTERACTION LOGIC ---
+
+        document.getElementById('colorPicker').addEventListener('input', (e) => {
+            targetColor.set(e.target.value);
+            // Apply tint to Rim Light and Directional Light to "color" the scene
+            rimLight.color.set(targetColor);
+            
+            // Also try to tint the model mesh if possible
+            if(humanModel) {
+                humanModel.traverse((child) => {
+                    if(child.isMesh && child.material) {
+                        child.material.color.set(targetColor);
+                    }
+                });
+            }
+        });
+
+        // --- MEDIAPIPE HAND TRACKING ---
+        
+        const videoElement = document.getElementById('input_video');
+        const previewCanvas = document.getElementById('webcam-preview');
+        const previewCtx = previewCanvas.getContext('2d');
+        const statusDiv = document.getElementById('status');
+        
+        // Control Variables
+        let targetScale = 1.0; 
+        let currentScale = 1.0;
+        
+        let targetRotX = 0;
+        let targetRotY = 0;
+        let currentRotX = 0;
+        let currentRotY = 0;
+
+        function onResults(results) {
+            
+            // Draw webcam preview
+            previewCanvas.width = videoElement.videoWidth;
+            previewCanvas.height = videoElement.videoHeight;
+            previewCtx.save();
+            previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+            previewCtx.drawImage(results.image, 0, 0, previewCanvas.width, previewCanvas.height);
+            
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                statusDiv.innerText = "Tracking Active";
+                statusDiv.style.color = "#00ff00";
+
+                drawConnectors(previewCtx, results.multiHandLandmarks[0], HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 5});
+                
+                const landmarks = results.multiHandLandmarks[0];
+
+                // 1. PINCH LOGIC (Scaling)
+                // Thumb (4) to Index (8)
+                const thumb = landmarks[4];
+                const index = landmarks[8];
+                const dist = Math.hypot(thumb.x - index.x, thumb.y - index.y);
+                
+                // Map distance to scale
+                // 0.05 (Closed) -> 0.5 Scale
+                // 0.20 (Open) -> 1.5 Scale
+                const normScale = Math.max(0, Math.min(1, (dist - 0.05) / 0.15));
+                targetScale = 0.5 + (normScale * 1.5); 
+
+                // 2. POSITION LOGIC (Rotation)
+                // Wrist (0) position
+                const wrist = landmarks[0];
+                // x: 0 (left) -> 1 (right). Map to -PI to +PI
+                targetRotY = (wrist.x - 0.5) * 4; 
+                // y: 0 (top) -> 1 (bottom). Map to -1 to +1 rad
+                targetRotX = (wrist.y - 0.5) * 3;
+
+            } else {
+                // No hands detected, drift back to idle
+                statusDiv.innerText = "Show hands to control";
+                statusDiv.style.color = "#4f6ef7";
+                targetScale = 1.0;
+                targetRotY += 0.002; // Auto rotate when idle
+            }
+            previewCtx.restore();
+        }
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults(onResults);
+
+        // Camera setup with Error handling
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 320,
+            height: 240
+        });
+        
+        cameraUtils.start().catch(err => {
+            console.error(err);
+            statusDiv.innerText = "Camera Error (See Console)";
+            statusDiv.style.color = "red";
+        });
+
+        // --- ANIMATION LOOP ---
+        const clock = new THREE.Clock();
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+
+            if (humanModel) {
+                // Smooth Interpolation (Lerp) for physics-like feel
+                // Scale
+                currentScale += (targetScale - currentScale) * 0.1;
+                // Note: We use the base scale we calculated (humanModel.scale is a Vector3, so we multiply scalar)
+                // But since we want absolute control, we can just apply scalar relative to 1.
+                // However, the model might be huge/tiny, so we apply it to a group or pre-calculated base.
+                // For simplicity in this script, we assume the initial auto-scale set the baseline.
+                // We'll just modify the Object scale directly, assuming targetScale centers around the initial size.
+                
+                // Better approach: Apply scale to the BASE scale.
+                // But here, let's just use the scalar directly for simplicity like the particle system.
+                const baseScale = humanModel.userData.baseScale || humanModel.scale.x;
+                // Store base scale on first run if not there
+                if (!humanModel.userData.baseScale) humanModel.userData.baseScale = baseScale;
+
+                humanModel.scale.setScalar(humanModel.userData.baseScale * currentScale);
+
+                // Rotation
+                currentRotX += (targetRotX - currentRotX) * 0.1;
+                currentRotY += (targetRotY - currentRotY) * 0.1;
+
+                humanModel.rotation.y = currentRotY;
+                humanModel.rotation.x = currentRotX;
+            }
+            
+            if (mixer) mixer.update(delta);
+
+            renderer.render(scene, camera);
+        }
+
+        // Handle Window Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+
+    </script>
+</body>
+</html>
